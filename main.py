@@ -9,7 +9,7 @@ intents.guilds = True
 intents.message_content = True
 intents.guild_messages = True
 intents.guild_reactions = True
-intents.guild_presences = False
+intents.presences = False
 
 # Create bot instance
 bot = commands.Bot(command_prefix='!', intents=intents)
