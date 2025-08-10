@@ -26,6 +26,38 @@ class TeamList:
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}!")
+    
+    # Sync slash commands
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
+    
+    # Send startup message to all servers
+    for guild in bot.guilds:
+        channel = None
+        
+        # Look for common channel names
+        for ch in guild.text_channels:
+            if ch.name.lower() in ['general', 'main', 'chat', 'bot-commands']:
+                if ch.permissions_for(guild.me).send_messages:
+                    channel = ch
+                    break
+        
+        # If no common channel found, use the first channel the bot can send messages to
+        if not channel:
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).send_messages:
+                    channel = ch
+                    break
+        
+        # Send the startup message
+        if channel:
+            try:
+                await channel.send("🤖 **Bot is now online and ready!**\n*Use `!addlist @RoleName` or `/addlist` to create member lists.*")
+            except discord.Forbidden:
+                pass
 
 async def post_or_update_list(channel, team_list):
     guild = channel.guild
@@ -70,6 +102,7 @@ async def post_or_update_list(channel, team_list):
         msg = await channel.send(content)
         team_list.message_id = msg.id
 
+# Prefix Commands (!)
 @bot.command()
 async def addlist(ctx, team_role: discord.Role):
     channel_lists = lists.setdefault(ctx.channel.id, {})
@@ -120,6 +153,58 @@ async def unhiderole(ctx, team_role: discord.Role, role_to_unhide: discord.Role)
     team_list.hidden_roles.discard(role_to_unhide.id)
     await ctx.send(f"Role **{role_to_unhide.name}** unhidden in list for **{team_role.name}**.")
     await post_or_update_list(ctx.channel, team_list)
+
+# Slash Commands (/)
+@bot.tree.command(name="addlist", description="Add a member list for a role")
+async def slash_addlist(interaction: discord.Interaction, team_role: discord.Role):
+    channel_lists = lists.setdefault(interaction.channel.id, {})
+    if team_role.id in channel_lists:
+        await interaction.response.send_message(f"List for {team_role.name} already exists in this channel.")
+        return
+
+    team_list = TeamList(team_role.id)
+    channel_lists[team_role.id] = team_list
+    await interaction.response.send_message(f"List for **{team_role.name}** added!")
+    await post_or_update_list(interaction.channel, team_list)
+
+@bot.tree.command(name="removelist", description="Remove a member list for a role")
+async def slash_removelist(interaction: discord.Interaction, team_role: discord.Role):
+    channel_lists = lists.get(interaction.channel.id, {})
+    team_list = channel_lists.pop(team_role.id, None)
+    if team_list:
+        if team_list.message_id:
+            try:
+                msg = await interaction.channel.fetch_message(team_list.message_id)
+                await msg.delete()
+            except discord.NotFound:
+                pass
+        await interaction.response.send_message(f"List for **{team_role.name}** removed.")
+    else:
+        await interaction.response.send_message("List not found in this channel.")
+
+@bot.tree.command(name="hiderole", description="Hide members with a specific role from team lists")
+async def slash_hiderole(interaction: discord.Interaction, team_role: discord.Role, role_to_hide: discord.Role):
+    channel_lists = lists.get(interaction.channel.id, {})
+    team_list = channel_lists.get(team_role.id)
+    if not team_list:
+        await interaction.response.send_message("List for that team role not found in this channel.")
+        return
+
+    team_list.hidden_roles.add(role_to_hide.id)
+    await interaction.response.send_message(f"Role **{role_to_hide.name}** hidden in list for **{team_role.name}**.")
+    await post_or_update_list(interaction.channel, team_list)
+
+@bot.tree.command(name="unhiderole", description="Unhide members with a specific role from team lists")
+async def slash_unhiderole(interaction: discord.Interaction, team_role: discord.Role, role_to_unhide: discord.Role):
+    channel_lists = lists.get(interaction.channel.id, {})
+    team_list = channel_lists.get(team_role.id)
+    if not team_list:
+        await interaction.response.send_message("List for that team role not found in this channel.")
+        return
+
+    team_list.hidden_roles.discard(role_to_unhide.id)
+    await interaction.response.send_message(f"Role **{role_to_unhide.name}** unhidden in list for **{team_role.name}**.")
+    await post_or_update_list(interaction.channel, team_list)
 
 @bot.event
 async def on_member_update(before, after):
