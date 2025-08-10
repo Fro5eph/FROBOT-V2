@@ -136,3 +136,13 @@ async def on_member_update(before, after):
 
 # Run the bot with token from environment
 bot.run(os.getenv("DISCORD_TOKEN"))
+
+import os
+import discord
+from discord.ext import commands
+
+# ... your existing code ...
+
+# Keep the bot running
+if __name__ == "__main__":
+    bot.run(os.getenv("DISCORD_TOKEN"))
