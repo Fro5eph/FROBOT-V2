@@ -1,7 +1,6 @@
 import os
 import discord
-from discord.ext import commands, tasks
-import asyncio
+from discord.ext import commands
 from datetime import datetime
 
 # Set up intents
@@ -9,9 +8,6 @@ intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 intents.message_content = True
-intents.guild_messages = True
-intents.guild_reactions = True
-intents.presences = False
 
 # Create bot instance
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -27,50 +23,10 @@ class TeamList:
         self.team_role_id = team_role_id
         self.hidden_roles = set()
         self.message_id = None
-        self.last_updated = None
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}!")
-    
-    # Start the periodic update task
-    if not update_lists_task.is_running():
-        update_lists_task.start()
-    
-    # Send startup message to all servers
-    for guild in bot.guilds:
-        await send_startup_message(guild)
-
-async def send_startup_message(guild):
-    """Send startup message to appropriate channel"""
-    channel = None
-    
-    # Look for common channel names
-    for ch in guild.text_channels:
-        if ch.name.lower() in ['general', 'main', 'chat', 'bot-commands', 'bots']:
-            if ch.permissions_for(guild.me).send_messages:
-                channel = ch
-                break
-    
-    # If no common channel found, use the first available channel
-    if not channel:
-        for ch in guild.text_channels:
-            if ch.permissions_for(guild.me).send_messages:
-                channel = ch
-                break
-    
-    if channel:
-        try:
-            embed = discord.Embed(
-                title="🤖 Bot Online!",
-                description="**Team Member List Bot is ready!**\n\n**Quick Start:**\n• `!addrank @Role 1` - Add a rank role with priority\n• `!addlist @TeamRole` - Create a member list\n• `!help` - View all commands",
-                color=get_guild_color(guild.id),
-                timestamp=datetime.utcnow()
-            )
-            embed.set_footer(text="Use !botinfo for detailed information")
-            await channel.send(embed=embed)
-        except discord.Forbidden:
-            pass
 
 def get_guild_color(guild_id):
     """Get embed color for guild (default blue)"""
@@ -81,7 +37,7 @@ def get_guild_color(guild_id):
 def get_member_rank_role(member, guild_id):
     """Get the highest priority rank role for a member"""
     if guild_id not in rank_roles:
-        return None, 999  # No rank, lowest priority
+        return None, 999
     
     guild_rank_roles = rank_roles[guild_id]
     member_rank_roles = []
@@ -92,9 +48,8 @@ def get_member_rank_role(member, guild_id):
             member_rank_roles.append((role, priority))
     
     if not member_rank_roles:
-        return None, 999  # No rank, lowest priority
+        return None, 999
     
-    # Return role with highest priority (lowest number)
     return min(member_rank_roles, key=lambda x: x[1])
 
 def get_member_custom_info(member, guild_id):
@@ -113,24 +68,20 @@ def get_member_custom_info(member, guild_id):
     
     return " | ".join(info_parts)
 
-async def safe_delete_message(message):
-    """Safely delete a message without throwing errors"""
-    try:
-        await message.delete()
-    except:
-        pass
-
 async def send_private_response(ctx, embed):
     """Send response to user privately and delete command"""
-    await ctx.author.send(embed=embed)
-    await safe_delete_message(ctx.message)
+    try:
+        await ctx.author.send(embed=embed)
+        await ctx.message.delete()
+    except:
+        await ctx.send(embed=embed)
 
 async def post_or_update_list(channel, team_list):
     """Create or update member list with embed"""
     guild = channel.guild
     team_role = guild.get_role(team_list.team_role_id)
     if not team_role:
-        return  # Role doesn't exist anymore
+        return
     
     # Get members with the team role
     members = [m for m in team_role.members if not m.bot]
@@ -163,7 +114,6 @@ async def post_or_update_list(channel, team_list):
             rank_role, _ = get_member_rank_role(member, guild.id)
             rank_name = rank_role.name if rank_role else "No Rank"
             
-            # Add custom parameters
             custom_info = get_member_custom_info(member, guild.id)
             custom_text = f" | {custom_info}" if custom_info else ""
             
@@ -171,22 +121,7 @@ async def post_or_update_list(channel, team_list):
         
         embed.description = "\n".join(member_list)
     
-    embed.set_footer(text=f"Total Members: {len(filtered_members)} | Last Updated")
-    
-    # Add rank roles info if available
-    if guild.id in rank_roles and rank_roles[guild.id]:
-        rank_info = []
-        for role_id, info in sorted(rank_roles[guild.id].items(), key=lambda x: x[1]['priority'])[:10]:
-            role = guild.get_role(role_id)
-            if role:
-                rank_info.append(f"`{info['priority']}` {role.name}")
-        
-        if rank_info:
-            embed.add_field(
-                name="🏆 Rank Priority",
-                value="\n".join(rank_info),
-                inline=True
-            )
+    embed.set_footer(text=f"Total Members: {len(filtered_members)}")
     
     # Update or send new message
     try:
@@ -200,37 +135,8 @@ async def post_or_update_list(channel, team_list):
         else:
             msg = await channel.send(embed=embed)
             team_list.message_id = msg.id
-        
-        team_list.last_updated = datetime.utcnow()
-        
-    except discord.Forbidden:
-        pass  # No permissions
-
-async def update_server_lists(guild):
-    """Update all lists in a server"""
-    for channel_id, channel_lists in lists.items():
-        channel = guild.get_channel(channel_id)
-        if channel:
-            for team_list in channel_lists.values():
-                await post_or_update_list(channel, team_list)
-                await asyncio.sleep(0.5)  # Small delay to avoid rate limits
-
-# Periodic update task
-@tasks.loop(minutes=5)
-async def update_lists_task():
-    """Periodically update all lists"""
-    for channel_id, channel_lists in lists.items():
-        try:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                for team_list in channel_lists.values():
-                    # Only update if it's been more than 4 minutes since last update
-                    if (not team_list.last_updated or 
-                        (datetime.utcnow() - team_list.last_updated).total_seconds() > 240):
-                        await post_or_update_list(channel, team_list)
-                        await asyncio.sleep(1)  # Rate limit protection
-        except Exception as e:
-            print(f"Error updating lists: {e}")
+    except:
+        pass
 
 # RANK MANAGEMENT COMMANDS
 @bot.command(name='addrank')
@@ -269,9 +175,6 @@ async def addrank(ctx, role: discord.Role, priority: int = None):
         color=0x2ecc71
     )
     await send_private_response(ctx, embed)
-    
-    # Update all existing lists in this server
-    await update_server_lists(ctx.guild)
 
 @bot.command(name='removerank')
 async def removerank(ctx, role: discord.Role):
@@ -286,9 +189,6 @@ async def removerank(ctx, role: discord.Role):
             color=0x2ecc71
         )
         await send_private_response(ctx, embed)
-        
-        # Update all existing lists
-        await update_server_lists(ctx.guild)
     else:
         embed = discord.Embed(
             title="❌ Not Found",
@@ -315,7 +215,6 @@ async def listranks(ctx):
         color=get_guild_color(guild_id)
     )
     
-    # Sort by priority
     sorted_ranks = sorted(rank_roles[guild_id].items(), key=lambda x: x[1]['priority'])
     
     rank_list = []
@@ -354,9 +253,6 @@ async def addparam(ctx, param_name: str, *roles: discord.Role):
         color=0x2ecc71
     )
     await send_private_response(ctx, embed)
-    
-    # Update all existing lists
-    await update_server_lists(ctx.guild)
 
 @bot.command(name='removeparam')
 async def removeparam(ctx, param_name: str):
@@ -371,9 +267,6 @@ async def removeparam(ctx, param_name: str):
             color=0x2ecc71
         )
         await send_private_response(ctx, embed)
-        
-        # Update all existing lists
-        await update_server_lists(ctx.guild)
     else:
         embed = discord.Embed(
             title="❌ Not Found",
@@ -419,7 +312,7 @@ async def removelist(ctx, team_role: discord.Role):
             try:
                 msg = await ctx.channel.fetch_message(team_list.message_id)
                 await msg.delete()
-            except discord.NotFound:
+            except:
                 pass
         
         embed = discord.Embed(
@@ -434,6 +327,30 @@ async def removelist(ctx, team_role: discord.Role):
             color=0xe74c3c
         )
     
+    await send_private_response(ctx, embed)
+
+@bot.command(name='updatelist')
+async def updatelist(ctx, team_role: discord.Role):
+    """Manually update a member list"""
+    channel_lists = lists.get(ctx.channel.id, {})
+    team_list = channel_lists.get(team_role.id)
+    
+    if not team_list:
+        embed = discord.Embed(
+            title="❌ List Not Found",
+            description="List for that team role not found in this channel.",
+            color=0xe74c3c
+        )
+        await send_private_response(ctx, embed)
+        return
+    
+    await post_or_update_list(ctx.channel, team_list)
+    
+    embed = discord.Embed(
+        title="✅ List Updated",
+        description=f"List for **{team_role.name}** has been updated!",
+        color=0x2ecc71
+    )
     await send_private_response(ctx, embed)
 
 @bot.command(name='hiderole')
@@ -582,7 +499,7 @@ async def help_command(ctx):
     
     embed.add_field(
         name="📋 **List Management**",
-        value="`!addlist @role` - Create member list\n`!removelist @role` - Remove list\n`!hiderole @team @role` - Hide role from list\n`!unhiderole @team @role` - Show role in list",
+        value="`!addlist @role` - Create member list\n`!removelist @role` - Remove list\n`!updatelist @role` - Manually update list\n`!hiderole @team @role` - Hide role from list\n`!unhiderole @team @role` - Show role in list",
         inline=False
     )
     
@@ -604,14 +521,20 @@ async def help_command(ctx):
         inline=False
     )
     
-    embed.set_footer(text="Lower rank numbers = higher priority • System messages sent privately!")
+    embed.set_footer(text="Lower rank numbers = higher priority • Use !updatelist to refresh lists!")
     await send_private_response(ctx, embed)
 
 @bot.event
 async def on_member_update(before, after):
     """Handle member role updates"""
-    # Let the periodic task handle updates instead of immediate updates
-    pass
+    if before.roles != after.roles:
+        for channel_id, channel_lists in lists.items():
+            channel = after.guild.get_channel(channel_id)
+            if channel:
+                for team_list in channel_lists.values():
+                    team_role = after.guild.get_role(team_list.team_role_id)
+                    if team_role and (team_role in before.roles or team_role in after.roles):
+                        await post_or_update_list(channel, team_list)
 
 # Run the bot
 if __name__ == "__main__":
