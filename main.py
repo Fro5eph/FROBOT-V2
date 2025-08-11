@@ -9,8 +9,8 @@ intents.members = True
 intents.guilds = True
 intents.message_content = True
 
-# Create bot instance
-bot = commands.Bot(command_prefix='!', intents=intents)
+# Create bot instance with disabled default help
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Data structures
 lists = {}  # {channel_id: {team_role_id: TeamList}}
